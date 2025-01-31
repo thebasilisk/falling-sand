@@ -1,0 +1,11 @@
+[package]
+name = "falling-sand"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+metal = "0.30.0"
+objc2 = "0.5.2"
+objc2-app-kit = {version = "0.2.2", features = ["NSScreen", "NSApplication", "NSResponder", "NSWindow", "NSGraphics", "NSColor", "NSEvent", "NSView", "objc2-quartz-core", "NSRunningApplication", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSCursor"]}
+objc2-foundation = {version = "0.2.2", features = ["NSThread", "NSObjCRuntime", "NSRunLoop", "NSString"]}
+rand = "0.8.5"
