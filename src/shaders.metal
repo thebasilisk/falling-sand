@@ -4,18 +4,20 @@ using namespace metal;
 
 static constant uint hash1 = 15823;
 static constant uint hash2 = 9737333;
+static constant uint hash3 = 71993;
 
 static constant float max_velocity = 0.5;
 
-int2 cell_from_position (float2 pos, float radius) {
-    return (int2)floor(pos / radius);
+int3 cell_from_position (float3 pos, float radius) {
+    return (int3)floor(pos / radius);
 }
 
-uint hash_cell (int2 pos) {
-    uint2 upos = (uint2)pos;
+uint hash_cell (int3 pos) {
+    uint3 upos = (uint3)pos;
     uint a = hash1 * upos.x;
     uint b = hash2 * upos.y;
-    return a + b;
+    uint c = hash3 * upos.z;
+    return a + b + c;
 }
 
 uint key_from_hash (uint hash, uint count) {
@@ -24,13 +26,13 @@ uint key_from_hash (uint hash, uint count) {
 
 
 kernel void hash_kernel (
-    const device float2 *pos [[ buffer(0) ]],
+    const device packed_float3 *pos [[ buffer(0) ]],
     device uint4 *spatial_indices [[ buffer(1) ]],
     device uint *spatial_offsets [[ buffer(2) ]],
     const device float *cell_size_count [[ buffer(3) ]],
     uint gid [[ thread_position_in_grid ]]
 ) {
-    int2 cell = cell_from_position(pos[gid], cell_size_count[0]);
+    int3 cell = cell_from_position(pos[gid], cell_size_count[0]);
     uint hash = hash_cell(cell);
     spatial_indices[gid] = uint4(key_from_hash(hash, (uint)cell_size_count[1]), hash, gid, 0);
     spatial_offsets[min(gid, (uint)cell_size_count[1])] = (uint)cell_size_count[1];
@@ -92,26 +94,29 @@ kernel void offset_kernel (
 
 
 kernel void physics_kernel (
-    device float2 *pos [[ buffer(0) ]],
-    device float2 *vels [[ buffer(1) ]],
+    device packed_float3 *pos [[ buffer(0) ]],
+    device packed_float3 *vels [[ buffer(1) ]],
     const device float *grav [[ buffer(2) ]],
     const device float *del_t [[ buffer(3) ]],
     const device uint *len [[ buffer(4) ]],
     uint gid [[ thread_position_in_grid ]]
 ) {
     if (gid > len[0]) return;
-    vels[gid] += float2(0.0, grav[0]) * del_t[0];
+    vels[gid] += float3(0.0, grav[0], 0.0) * del_t[0];
     if (length(vels[gid]) >= max_velocity) {
-        vels[gid] -= float2(0.0, grav[0]) * del_t[0];
+        vels[gid] *= 0.99;
     }
     pos[gid] += vels[gid] * del_t[0];
 
     if (pos[gid].y <= 0.0) {
-        pos[gid] = float2(pos[gid].x, -0.0);
-        vels[gid] = float2(vels[gid].x, vels[gid].y * -1);
+        pos[gid] = float3(pos[gid].x, 0.001, pos[gid].z);
+        vels[gid] = float3(vels[gid].x, vels[gid].y * -0.95, vels[gid].z);
     }
     if (pos[gid].x <= 0.0 || pos[gid].x >= 1.0) {
-        vels[gid] = float2(vels[gid].x * -1, vels[gid].y);
+        vels[gid] = float3(vels[gid].x * -0.95, vels[gid].y, vels[gid].z);
+    }
+    if (pos[gid].z <= 1.0 || pos[gid].z >= 2.0) {
+        vels[gid] = float3(vels[gid].x, vels[gid].y, vels[gid].z * -0.95);
     }
 }
 
@@ -122,44 +127,71 @@ enum PType {
     Other
 };
 
-static constant int2 grid_offsets[9] = {
-    int2(-1, 1),
-	int2(0, 1),
-	int2(1, 1),
-	int2(-1, 0),
-	int2(0, 0),
-	int2(1, 0),
-	int2(-1, -1),
-	int2(0, -1),
-	int2(1, -1),
+//static constant int2 grid_offsets2[9] = {
+//    int2(-1, 1),
+//	int2(0, 1),
+//	int2(1, 1),
+//	int2(-1, 0),
+//	int2(0, 0),
+//	int2(1, 0),
+//	int2(-1, -1),
+//	int2(0, -1),
+//	int2(1, -1),
+//};
+
+static constant int3 grid_offsets[27] = {
+    int3(-1, -1, -1),
+    int3(-1, -1, -0),
+    int3(-1, -1, 1),
+    int3(-1, -0, -1),
+    int3(-1, -0, -0),
+    int3(-1, -0, 1),
+    int3(-1, 1, -1),
+    int3(-1, 1, -0),
+    int3(-1, 1, 1),
+    int3(0, -1, -1),
+    int3(0, -1, -0),
+    int3(0, -1, 1),
+    int3(0, -0, -1),
+    int3(0, -0, -0),
+    int3(0, -0, 1),
+    int3(0, 1, -1),
+    int3(0, 1, -0),
+    int3(0, 1, 1),
+    int3(1, -1, -1),
+    int3(1, -1, -0),
+    int3(1, -1, 1),
+    int3(1, -0, -1),
+    int3(1, -0, -0),
+    int3(1, -0, 1),
+    int3(1, 1, -1),
+    int3(1, 1, -0),
+    int3(1, 1, 1),
 };
 
 kernel void collision_kernel (
-    device float2 *pos [[ buffer(0) ]],
-    device float2 *vels [[ buffer(1) ]],
-    device PType *mats [[ buffer(2) ]],
-    const device uint4 *spatial_indices [[ buffer(3) ]],
-    const device uint *spatial_offsets [[ buffer(4) ]],
-    const device float *cell_size_count [[ buffer(5) ]],
-    const device float *num [[ buffer(6) ]],
-    device uint *offsets [[ buffer(7) ]],
+    device packed_float3 *pos [[ buffer(0) ]],
+    device packed_float3 *vels [[ buffer(1) ]],
+    device packed_float3 *dels [[ buffer(2) ]],
+    device PType *mats [[ buffer(3) ]],
+    const device uint4 *spatial_indices [[ buffer(4) ]],
+    const device uint *spatial_offsets [[ buffer(5) ]],
+    const device float *cell_size_count [[ buffer(6) ]],
+    const device float *num [[ buffer(7) ]],
     uint gid [[ thread_position_in_grid ]]
 ) {
 
-    float2 position = pos[gid];
-    float threshold = 0.01;
+    float3 position = pos[gid];
+    float threshold = 0.005;
 
-    for (int n = 0; n < 9; n++) {
+    for (int n = 0; n < 27; n++) {
         uint hash = hash_cell(cell_from_position(position, cell_size_count[0]) + grid_offsets[n]);
         uint key = key_from_hash(hash, (uint)cell_size_count[1]);
         uint offset = spatial_offsets[key];
-        if (gid <= cell_size_count[1]) {
-            offsets[gid] = offset;
-        }
 
         uint i = 0;
         uint4 current = spatial_indices[offset];
-        while (offset + i < 1024) {
+        while (offset + i < 10000) {
             if (current.x != key) break;
             if (current.y != hash) break;
             if (current.z == gid) {
@@ -168,10 +200,16 @@ kernel void collision_kernel (
                 continue;
             }
 
-            if (distance(pos[current.z], position) <= threshold) {
-                float2 temp = vels[current.z];
-                vels[current.z] = vels[gid];
-                vels[gid] = temp;
+            float3 gap = pos[current.z] - position;
+            if (length(gap) <= threshold) {
+                //float3 temp = vels[current.z] * 0.99;
+                //vels[current.z] = vels[gid] * 0.99;
+                //vels[gid] = temp;
+
+                pos[gid] -= gap * 0.25;
+                pos[current.z] += gap * 0.25;
+                dels[gid] = (vels[current.z] + dels[gid]) / 2.0 * 0.99;
+                dels[current.z] = (vels[gid] + dels[current.z]) / 2.0 * 0.99;
 
                 if (mats[current.z] != mats[gid]) {
                     if (mats[current.z] == Grass) {
@@ -195,13 +233,20 @@ kernel void collision_kernel (
                             mats[gid] = Water;
                         }
                     }
-                    break;
                 }
             }
             i++;
             current = spatial_indices[offset + i];
         }
     }
+}
+
+kernel void update_kernel (
+    device packed_float3 *vels [[  buffer(0) ]],
+    device packed_float3 *dels [[ buffer(1) ]],
+    uint gid [[ thread_position_in_grid ]]
+) {
+    vels[gid] = dels[gid];
 }
 
 
@@ -211,8 +256,8 @@ struct ColorInOut {
 };
 
 vertex ColorInOut rect_vertex (
-    const device float2 *positions [[ buffer(0) ]],
-    const device float2 *velocities [[ buffer(1) ]],
+    const device packed_float3 *positions [[ buffer(0) ]],
+    const device packed_float3 *velocities [[ buffer(1) ]],
     const device PType *materials [[ buffer(2) ]],
     const device float *view_width [[ buffer(3) ]],
     uint vid [[ vertex_id ]],
@@ -225,9 +270,9 @@ vertex ColorInOut rect_vertex (
 
     int vid_bit1 = vid % 2;
     int vid_bit2 = vid / 2;
-    float size = 0.005;
+    float size = 0.0025;
 
-    float2 normalized_pos = pos * 2.0 - float2(1.0, 1.0);
+    float3 normalized_pos = pos * 2.0 - float3(1.0, 1.0, 0.0);
 
     float x = normalized_pos.x + (size) * (2 * vid_bit1 - 1);
     float y = normalized_pos.y - (size) * (2 * vid_bit2 - 1);
@@ -240,9 +285,9 @@ vertex ColorInOut rect_vertex (
         case 2 : color_excited = float4(0.0, 0.0, 1.0, 1.0); break;
         case 3 : color_excited = float4(0.5, 0.5, 0.5, 1.0); break;
     }
-    float4 color_base = color_excited * 0.5;
+    float4 color_base = float4(color_excited.xyz * 0.5, 1.0);
 
-    out.position = float4(x, y, 0.0, 1.0);
+    out.position = float4(x, y, pos.z, pos.z);
     out.color = mix(color_base, color_excited, length(vel) / max_velocity);
     //out.color = color_excited;
 

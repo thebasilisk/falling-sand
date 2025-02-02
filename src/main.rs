@@ -73,10 +73,11 @@ fn main() {
         window.makeKeyAndOrderFront(None);
     }
 
-    let num_particles = 2u32.pow(11) as usize;
+    let num_particles = 2u32.pow(10) as usize;
 
-    let mut particle_positions : Vec<Float2> = Vec::with_capacity(num_particles);
-    let mut particle_velocities : Vec<Float2> = Vec::with_capacity(num_particles);
+    let mut particle_positions : Vec<Float3> = Vec::with_capacity(num_particles);
+    let mut particle_velocities : Vec<Float3> = Vec::with_capacity(num_particles);
+    let mut particle_delta_vs : Vec<Float3> = Vec::with_capacity(num_particles);
     let mut spatial_indices : Vec<(u32, u32, u32, u32)> = Vec::with_capacity(num_particles);
     let mut spatial_offsets : Vec<u32> = Vec::with_capacity(num_particles);
     let mut materials : Vec<PType> = Vec::with_capacity(num_particles);
@@ -85,8 +86,9 @@ fn main() {
 
     for i in 0..num_particles {
         // particle_positions.push(Float2((i as f32 / num_particles as f32) * 2.0 - 1.0, (i as f32 / num_particles as f32) * 2.0 - 1.0));
-        particle_positions.push(Float2(random::<f32>(), random::<f32>()));
-        particle_velocities.push(Float2(random::<f32>() / 2.0 - 0.25, random::<f32>() / 10.0 - 0.05));
+        particle_positions.push(Float3(random::<f32>(), random::<f32>(), random::<f32>() + 1.0));
+        particle_velocities.push(Float3(random::<f32>() / 2.0 - 0.25, random::<f32>() / 10.0 - 0.05, random::<f32>() / 10.0 - 0.05));
+        particle_delta_vs.push(particle_velocities[i]);
         spatial_indices.push((0, 0, 0, 0));
         spatial_offsets.push(num_particles as u32);
         materials.push((i % 3).into());
@@ -155,6 +157,8 @@ fn main() {
     let collision_function = shader_lib.get_function("collision_kernel", None).expect("err finding collision function");
     let collision_pipeline = device.new_compute_pipeline_state_with_function(&collision_function).expect("Error creating pipeline");
 
+    let update_function = shader_lib.get_function("update_kernel", None).expect("err finding update function");
+    let update_pipeline = device.new_compute_pipeline_state_with_function(&update_function).expect("Error creating pipeline");
 
     //write a compute shader that handles swapping particle type based on interactions
 
@@ -162,6 +166,7 @@ fn main() {
 
     let position_buf = make_buf(&particle_positions, &device);
     let velocity_buf = make_buf(&particle_velocities, &device);
+    let delta_buf = make_buf(&particle_delta_vs, &device);
 
     let spatial_index_buf = make_buf(&spatial_indices, &device);
     let spatial_offsets_buf = make_buf(&spatial_offsets, &device);
@@ -172,8 +177,8 @@ fn main() {
     let gravity : f32 = -0.1;
     let delta_time : f32 = 1.0 / 30.0;
 
-    let cell_size : f32 = 0.5;
-    let cell_count = (2.0 / cell_size).powf(2.0);
+    let cell_size : f32 = 0.25;
+    let cell_count = (2.0 / cell_size).powf(3.0);
     // for _ in 0..cell_count as u32 {
     //     spatial_offsets.push(num_particles as u32);
     // }
@@ -198,7 +203,7 @@ fn main() {
             let physics_encoder = command_buffer.new_compute_command_encoder();
             physics_encoder.set_compute_pipeline_state(&physics_pipeline);
             physics_encoder.set_buffer(0, Some(&position_buf), 0);
-            physics_encoder.set_buffer(1, Some(&velocity_buf), 0);
+            physics_encoder.set_buffer(1, Some(&delta_buf), 0);
             physics_encoder.set_bytes(2, size_of::<f32>() as u64, vec![gravity].as_ptr() as *const _);
             physics_encoder.set_bytes(3, size_of::<f32>() as u64, vec![delta_time].as_ptr() as *const _);
             physics_encoder.set_bytes(4, size_of::<u32>() as u64, vec![num_particles as u32].as_ptr() as *const _);
@@ -244,12 +249,17 @@ fn main() {
 
             let collision_encoder = command_buffer.new_compute_command_encoder();
             collision_encoder.set_compute_pipeline_state(&collision_pipeline);
-            collision_encoder.set_buffers(0, &[Some(&position_buf), Some(&velocity_buf), Some(&materials_buf), Some(&spatial_index_buf), Some(&spatial_offsets_buf)], &[0, 0, 0, 0, 0]);
-            collision_encoder.set_bytes(5, size_of::<f32>() as u64 * 2, vec![cell_size, cell_count].as_ptr() as *const _);
-            collision_encoder.set_bytes(6, size_of::<f32>() as u64, vec![num_particles as f32].as_ptr() as *const _);
-            collision_encoder.set_buffer(7, Some(&cells_buf), 0);
+            collision_encoder.set_buffers(0, &[Some(&position_buf), Some(&velocity_buf), Some(&delta_buf), Some(&materials_buf), Some(&spatial_index_buf), Some(&spatial_offsets_buf)], &[0, 0, 0, 0, 0, 0]);
+            collision_encoder.set_bytes(6, size_of::<f32>() as u64 * 2, vec![cell_size, cell_count].as_ptr() as *const _);
+            collision_encoder.set_bytes(7, size_of::<f32>() as u64, vec![num_particles as f32].as_ptr() as *const _);
             collision_encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
             collision_encoder.end_encoding();
+
+            let update_encoder = command_buffer.new_compute_command_encoder();
+            update_encoder.set_compute_pipeline_state(&update_pipeline);
+            update_encoder.set_buffers(0, &[Some(&velocity_buf), Some(&delta_buf)], &[0, 0]);
+            update_encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
+            update_encoder.end_encoding();
 
             let particle_encoder = command_buffer.new_render_command_encoder(&particle_descriptor);
             particle_encoder.set_render_pipeline_state(&particle_pipeline);
